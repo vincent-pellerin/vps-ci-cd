@@ -14,6 +14,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Show current working directory
+        run: pwd
+
       - name: Debug repo structure
         run: ls -al
 
@@ -56,7 +59,7 @@ jobs:
           if docker stack ls | grep -q "^n8n"; then
             echo "Stack 'n8n' exists, checking for image updates..."
             # Pull la dernière image définie dans docker-compose.yml
-            docker-compose -f docker-compose.yml pull
+            docker compose -f docker-compose.yml pull
           else
             echo "Stack 'n8n' does not exist, deploying for the first time..."
           fi

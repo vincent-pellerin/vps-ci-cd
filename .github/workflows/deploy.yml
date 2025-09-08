@@ -9,7 +9,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
       - name: Debug repo structure
         run: ls -al
 
-      - name: Check n8n folder
+      - name: Check n8n folder locally
         run: ls -al ./n8n
 
       - name: Setup SSH
@@ -33,37 +33,35 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
+      - name: Ensure n8n directory exists on VPS
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            mkdir -p /home/${{ secrets.VPS_USER }}/n8n
+            chown $USER:$USER /home/${{ secrets.VPS_USER }}/n8n
+          EOF
+
       - name: Sync n8n files to VPS
         run: |
           rsync -avz --delete --exclude '.git' -e "ssh -o StrictHostKeyChecking=no" \
             ./n8n/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/home/${{ secrets.VPS_USER }}/n8n/
 
+      - name: Check files on VPS
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "ls -al /home/${{ secrets.VPS_USER }}/n8n"
+
       - name: Deploy n8n stack on VPS
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
-          set -e
-          cd /home/${{ secrets.VPS_USER }}/n8n
+            set -e
+            cd /home/${{ secrets.VPS_USER }}/n8n
 
-          # Vérifie que docker-compose.yml existe
-          if [ ! -f docker-compose.yml ]; then
-            echo "Error: docker-compose.yml not found!"
-            exit 1
-          fi
+            # Vérifie que docker-compose.yml existe
+            if [ ! -f docker-compose.yml ]; then
+              echo "Error: docker-compose.yml not found!"
+              exit 1
+            fi
 
-          # Crée les secrets si nécessaires (ajuster selon tes besoins)
-          if ! docker secret ls | grep -q n8n_basic_auth_password; then
-            echo '${{ secrets.N8N_BASIC_AUTH_PASSWORD }}' | docker secret create n8n_basic_auth_password -
-          fi
-
-           # Vérifie si le stack existe déjà
-          if docker stack ls | grep -q "^n8n"; then
-            echo "Stack 'n8n' exists, checking for image updates..."
-            # Pull la dernière image définie dans docker-compose.yml
-            docker compose -f docker-compose.yml pull
-          else
-            echo "Stack 'n8n' does not exist, deploying for the first time..."
-          fi
-
-          # Déploie via Docker Swarm
-          docker stack deploy -c docker-compose.yml n8n --with-registry-auth
+            # Déploie via Docker Swarm
+            docker compose -f docker-compose.yml pull || true
+            docker stack deploy -c docker-compose.yml n8n --with-registry-auth
           EOF

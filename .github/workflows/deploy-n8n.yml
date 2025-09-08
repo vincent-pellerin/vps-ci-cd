@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # permet un déclenchement manuel
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -14,103 +14,70 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # Nécessaire pour comparer les commits
+          fetch-depth: 2
           
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.DEPLOY_PRIVATE_KEY }}
-          ssh-passphrase: ${{ secrets.DEPLOY_PASSPHRASE }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
       - name: Add VPS to known hosts
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
-          
+
       - name: Check if n8n folder changed
         id: n8n_changes
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "n8n_changed=true" >> $GITHUB_OUTPUT
-            echo "Manual trigger detected - forcing deployment"
           else
-            # Pour le premier push, il n'y a pas de commit précédent
             if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
               echo "n8n_changed=true" >> $GITHUB_OUTPUT
-              echo "First push detected - deploying"
             else
               CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^n8n/' || true)
               if [ -n "$CHANGED" ]; then
                 echo "n8n_changed=true" >> $GITHUB_OUTPUT
-                echo "Changes detected in n8n folder: $CHANGED"
               else
                 echo "n8n_changed=false" >> $GITHUB_OUTPUT
-                echo "No changes in n8n folder"
               fi
             fi
           fi
-          
-      - name: Sync n8n files if changed
+
+      - name: Sync n8n files to VPS
         if: steps.n8n_changes.outputs.n8n_changed == 'true'
         run: |
-          echo "Syncing n8n files to VPS..."
           rsync -avz --delete --exclude '.git' -e "ssh -o StrictHostKeyChecking=no" \
             ./n8n/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/home/${{ secrets.VPS_USER }}/n8n/
-            
-      - name: Check for new n8n Docker image and deploy
+
+      - name: Rename stack file on VPS
+        if: steps.n8n_changes.outputs.n8n_changed == 'true'
         run: |
-          echo "Checking for Docker image updates and deploying if necessary..."
           ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
           set -e
-          
+          if [ -f /home/${{ secrets.VPS_USER }}/n8n/deploy-n8n.yml ]; then
+            mv /home/${{ secrets.VPS_USER }}/n8n/deploy-n8n.yml /home/${{ secrets.VPS_USER }}/n8n/docker-compose.yml
+          fi
+          EOF
+
+      - name: Deploy n8n stack on VPS
+        if: steps.n8n_changes.outputs.n8n_changed == 'true'
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+          set -e
+
           # Crée les secrets si non existants
           if ! docker secret ls | grep -q n8n_basic_auth_password; then
             echo '${{ secrets.N8N_BASIC_AUTH_PASSWORD }}' | docker secret create n8n_basic_auth_password -
-            echo "Created n8n_basic_auth_password secret"
           fi
-          
-          if ! docker secret ls | grep -q n8n_api_key; then
-            echo '${{ secrets.N8N_API_KEY }}' | docker secret create n8n_api_key -
-            echo "Created n8n_api_key secret"
-          fi
-          
-          # Vérifie l'image locale actuelle
-          LOCAL_IMAGE=$(docker image inspect docker.n8n.io/n8nio/n8n:latest --format '{{.Id}}' 2>/dev/null || echo 'none')
-          echo "Current local image: $LOCAL_IMAGE"
-          
-          # Pull la dernière image
-          echo "Pulling latest n8n image..."
+          #if ! docker secret ls | grep -q n8n_api_key; then
+          #  echo '${{ secrets.N8N_API_KEY }}' | docker secret create n8n_api_key -
+          #fi
+
+          # Pull la dernière image Docker
           docker pull docker.n8n.io/n8nio/n8n:latest
-          
-          REMOTE_IMAGE=$(docker image inspect docker.n8n.io/n8nio/n8n:latest --format '{{.Id}}')
-          echo "Latest remote image: $REMOTE_IMAGE"
-          
-          # Détermine si deploy nécessaire
-          DEPLOY=false
-          
-          if [ '${{ steps.n8n_changes.outputs.n8n_changed }}' = 'true' ]; then
-            DEPLOY=true
-            echo "Code changes detected - deployment required"
-          fi
-          
-          if [ "$LOCAL_IMAGE" != "$REMOTE_IMAGE" ]; then
-            DEPLOY=true
-            echo "New Docker image available - deployment required"
-          fi
-          
-          if [ "$DEPLOY" = "true" ]; then
-            echo "Deploying n8n stack..."
-            cd /home/${{ secrets.VPS_USER }}/n8n
-            
-            # Vérification que le fichier docker-compose.yml existe
-            if [ ! -f docker-compose.yml ]; then
-              echo "Error: docker-compose.yml not found in /home/${{ secrets.VPS_USER }}/n8n"
-              exit 1
-            fi
-            
-            # Déploiement du stack
-            docker stack deploy -c docker-compose.yml n8n --with-registry-auth
-            echo "Deployment completed successfully"
-          else
-            echo "No changes detected. Deployment skipped."
-          fi
+
+          # Déploiement via Docker Swarm
+          cd /home/${{ secrets.VPS_USER }}/n8n
+          docker stack deploy -c docker-compose.yml n8n --with-registry-auth
           EOF

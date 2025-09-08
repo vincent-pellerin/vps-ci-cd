@@ -9,59 +9,84 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Show current working directory
-        run: pwd
-
+        
       - name: Debug repo structure
-        run: ls -al
-
-      - name: Check n8n folder locally
-        run: ls -al ./n8n
-
+        run: |
+          echo "Current working directory:"
+          pwd
+          echo "Repository structure:"
+          ls -la
+          echo "N8n folder content:"
+          ls -la ./n8n/ || echo "N8n folder not found"
+          
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
+          
       - name: Add VPS to known hosts
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
-
+          
+      - name: Test SSH connection
+        run: |
+          echo "Testing SSH connection..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "echo 'SSH connection successful'"
+          
       - name: Ensure n8n directory exists on VPS
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
-            mkdir -p /home/${{ secrets.VPS_USER }}/n8n
-            chown $USER:$USER /home/${{ secrets.VPS_USER }}/n8n
-          EOF
-
+          echo "Creating n8n directory on VPS..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "mkdir -p /home/${{ secrets.VPS_USER }}/n8n && chown ${{ secrets.VPS_USER }}:${{ secrets.VPS_USER }} /home/${{ secrets.VPS_USER }}/n8n"
+            
       - name: Sync n8n files to VPS
         run: |
-          rsync -avz --delete --exclude '.git' -e "ssh -o StrictHostKeyChecking=no" \
-            ./n8n/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/home/${{ secrets.VPS_USER }}/n8n/
-
-      - name: Check files on VPS
+          echo "=== Debugging local structure ==="
+          pwd
+          ls -la
+          echo "=== N8N folder content ==="
+          ls -la ./n8n/
+          echo "=== Checking docker-compose.yml specifically ==="
+          cat ./n8n/docker-compose.yml | head -5
+          
+          echo "=== Copying files to VPS with SCP ==="
+          scp -o StrictHostKeyChecking=no -r ./n8n/* ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/home/${{ secrets.VPS_USER }}/n8n/
+          
+          echo "=== SCP completed ==="
+            
+      - name: Verify files on VPS
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "ls -al /home/${{ secrets.VPS_USER }}/n8n"
-
+          echo "Checking files on VPS:"
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "ls -la /home/${{ secrets.VPS_USER }}/n8n/"
+            
       - name: Deploy n8n stack on VPS
         run: |
+          echo "Deploying n8n stack..."
           ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
-            set -e
-            cd /home/${{ secrets.VPS_USER }}/n8n
-
-            # Vérifie que docker-compose.yml existe
-            if [ ! -f docker-compose.yml ]; then
-              echo "Error: docker-compose.yml not found!"
-              exit 1
-            fi
-
-            # Déploie via Docker Swarm
-            docker compose -f docker-compose.yml pull || true
-            docker stack deploy -c docker-compose.yml n8n --with-registry-auth
+          set -e
+          cd /home/${{ secrets.VPS_USER }}/n8n
+          
+          # Vérifie que docker-compose.yml existe
+          if [ ! -f docker-compose.yml ]; then
+            echo "Error: docker-compose.yml not found in $(pwd)"
+            echo "Files in directory:"
+            ls -la
+            exit 1
+          fi
+          
+          echo "Found docker-compose.yml, proceeding with deployment..."
+          
+          # Pull les images avant déploiement
+          docker compose -f docker-compose.yml pull || echo "Pull failed, continuing anyway"
+          
+          # Déploie via Docker Swarm
+          docker stack deploy -c docker-compose.yml n8n --with-registry-auth
+          
+          echo "Deployment completed successfully"
           EOF

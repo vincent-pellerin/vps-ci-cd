@@ -46,6 +46,15 @@ jobs:
             echo '${{ secrets.N8N_BASIC_AUTH_PASSWORD }}' | docker secret create n8n_basic_auth_password -
           fi
 
+           # Vérifie si le stack existe déjà
+          if docker stack ls | grep -q "^n8n"; then
+            echo "Stack 'n8n' exists, checking for image updates..."
+            # Pull la dernière image définie dans docker-compose.yml
+            docker-compose -f docker-compose.yml pull
+          else
+            echo "Stack 'n8n' does not exist, deploying for the first time..."
+          fi
+          
           # Déploie via Docker Swarm
           docker stack deploy -c docker-compose.yml n8n --with-registry-auth
           EOF

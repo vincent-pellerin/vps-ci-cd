@@ -41,3 +41,4 @@ networks:
 secrets:
   n8n_basic_auth_password:
     external: true
+
